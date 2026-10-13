@@ -901,35 +901,33 @@ When moving from `apps/dashboard/src/lib/components/` to `apps/dashboard/src/lib
 
 ## Cursor Cloud specific instructions
 
-The full setup/run flow lives in `README.md` and `DEV_SETUP_NOTES.md`. The notes below cover only the non-obvious, cloud-VM-specific caveats. The update script already runs `pnpm install` on startup.
+The full setup/run flow lives in `README.md` and `DEV_SETUP_NOTES.md`. The notes below cover only the non-obvious, cloud-VM-specific caveats. Environment `install` puts dependencies and package `dist/` in place; `start` brings services up on each boot.
 
 ### Node version (important)
-The sandbox injects `/exec-daemon/node` (Node 22) at the front of `PATH`, so a bare `node`/`pnpm` runs under Node 22 even though the repo requires Node `^20.19.3` (`.nvmrc`). Node 20.19.3 is installed via nvm and set as the nvm default. Before running any `pnpm`/dev command, prepend the repo Node to `PATH`:
+The sandbox injects `/exec-daemon/node` (Node 22) at the front of `PATH`, so a bare `node`/`pnpm` runs under Node 22 even though the repo requires Node `^20.19.3` (`.nvmrc`). Environment install places Node 20.19.3 and pnpm 10.19.0 at `~/.local/node-v20/bin`. Before running any `pnpm`/dev command, prepend that directory:
 
 ```bash
-export PATH="$HOME/.nvm/versions/node/v20.19.3/bin:$PATH"
+export PATH="$HOME/.local/node-v20/bin:$PATH"
 ```
 
-`pnpm install` itself succeeds under either version (there is no `engine-strict`), but run the dev servers and DB scripts on Node 20.
+`pnpm install` itself succeeds under either version (there is no `engine-strict`), but run the dev servers and DB scripts on Node 20. `apps/docs` and `apps/help` want Node 22; the API and dashboard do not.
 
 ### Services & how to run them
-Docker is installed and provides Postgres 16 + Redis 7 (the app does not run them natively). After a fresh VM boot the Docker daemon is usually not running — start it (it needs the snapshot's `/etc/docker/daemon.json`, which already sets `fuse-overlayfs` + disables the containerd snapshotter, plus `iptables-legacy`):
+`start` already launches what day-to-day development needs. Check `tmux ls` for `cio-dashboard` and `cio-api` before starting another copy.
 
-```bash
-sudo dockerd > /tmp/dockerd.log 2>&1 &
-sudo chmod 666 /var/run/docker.sock   # or prefix docker commands with sudo
-docker compose -f docker/docker-compose.yaml up -d postgres redis
-```
+- Docker daemon (`fuse-overlayfs`, containerd snapshotter off, iptables-legacy). Socket is mode `666` so the `ubuntu` user can use it.
+- Postgres 16 and Redis 7 via `docker compose -f docker-compose.yaml up -d postgres redis` (repo root compose file, containers `cio-postgres` and `cio-redis`).
+- Seed once, when `admin@test.com` is missing: `pnpm --filter @cio/db db:setup:seed`.
+- Dashboard tmux session `cio-dashboard`: `pnpm dashboard:dev` → http://localhost:5173
+- API tmux session `cio-api`, started after the dashboard responds: `pnpm api:dev` → http://localhost:3002 plus BullMQ workers.
 
-The per-app `.env` files (`apps/api/.env`, `apps/dashboard/.env`, `apps/jobs/.env`, `packages/db/.env`) are gitignored but persist in the VM snapshot with a matching `PRIVATE_SERVER_KEY`. If any are missing, recreate them per `README.md` (generate secrets with `openssl rand -hex 32`; the two `PRIVATE_SERVER_KEY` values must match).
+Vite binds IPv6. `curl http://localhost:5173/` works; `curl http://127.0.0.1:5173/` does not. Login is `admin@test.com` / `123456`.
 
-The Postgres docker volume persists in the snapshot already seeded with demo data (login `admin@test.com` / `123456`). Re-seed only if needed: `pnpm --filter @cio/db db:setup:seed`.
+Do not start `pnpm dashboard:dev` and `pnpm api:dev` together on a cold tree. `dashboard:dev` rebuilds `@cio/utils` (it deletes `dist/`), and the API `predev` typecheck fails while that directory is missing. `start` waits for the dashboard before launching the API for that reason.
 
-Run the app (two long-lived processes; use tmux):
-- `pnpm api:dev` → API on `http://localhost:3002` + 5 BullMQ workers.
-- `pnpm dashboard:dev` → dashboard on `http://localhost:5173` + the `@cio/ui` Tailwind CSS watcher.
+Gitignored `.env` files are recreated when missing from `~/.config/classroomio/dev-secrets.env` (`BETTER_AUTH_SECRET` and `PRIVATE_SERVER_KEY`). `PUBLIC_IS_SELFHOSTED=false` in both `apps/api/.env` and `apps/dashboard/.env`.
 
-Do not use `pnpm dev` (it trips turbo's concurrency cap). Build shared package `dist/` once with `pnpm build` if you see `Failed to resolve entry for package "@cio/*"`.
+Do not use `pnpm dev` (it trips turbo's concurrency cap). Shared package `dist/` is produced by `install` (`pnpm --filter @cio/api^... build` and `pnpm --filter @cio/dashboard^... build`). Do not run a full `pnpm build`; `@cio/storybook` fails on an unresolved `@lucide/svelte/icons/bot` import.
 
 ### Known caveats
 - **Vite SSR circular dependency (layerchart):** authenticated/chart pages occasionally render "Something unexpected occurred" on a cold load. Reload the page (or restart `dashboard:dev`) and it renders — it is intermittent, not a setup failure.
